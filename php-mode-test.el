@@ -34,6 +34,10 @@
 (eval-when-compile
   (require 'cl))
 
+;; Work around bug #14325
+;; <http://debbugs.gnu.org/cgi/bugreport.cgi?bug=14325>.
+(c-after-font-lock-init)
+
 (defvar php-mode-test-dir (expand-file-name "tests" (file-name-directory load-file-name))
   "Directory containing the `php-mode' test files.")
 
@@ -65,7 +69,7 @@ be processed."
                        answers))))
      answers)))
 
-(defmacro* with-php-mode-test ((file &optional &key style indent magic) &rest body)
+(defmacro* with-php-mode-test ((file &key style indent magic) &rest body)
   "Set up environment for testing `php-mode'.
 Execute BODY in a temporary buffer containing the contents of
 FILE, in `php-mode'. Optional keyword `:style' can be used to set
@@ -76,17 +80,19 @@ the coding style to one of the following:
 3. `wordpress'
 4. `symfony2'
 
-Using any other symbol for STYLE results in undefined behavior."
+Using any other symbol for STYLE results in undefined behavior.
+The test will use the PEAR style by default."
   (declare (indent 1))
   `(with-temp-buffer
      (insert-file-contents (expand-file-name ,file php-mode-test-dir))
+     (php-mode)
+     (font-lock-fontify-buffer)
      ,(case style
         (pear '(php-enable-pear-coding-style))
         (drupal '(php-enable-drupal-coding-style))
         (wordpress '(php-enable-wordpress-coding-style))
-        (symfony2 '(php-enable-symfony2-coding-style)))
-     (php-mode)
-     (font-lock-fontify-buffer)
+        (symfony2 '(php-enable-symfony2-coding-style))
+        (t '(php-enable-pear-coding-style)))
      ,(if indent
           '(indent-region (point-min) (point-max)))
      ,(if magic
@@ -205,3 +211,46 @@ an error."
               (delete-indentation))
             (beginning-of-line)
             (should (string= (thing-at-point 'line) correct-line))))))))
+
+(ert-deftest php-mode-test-issue-99 ()
+  "Proper indentation for 'foreach' statements without braces."
+  (with-php-mode-test ("issue-99.php" :indent t :magic t)))
+
+(ert-deftest php-mode-test-issue-115 ()
+  "Proper alignment for chained method calls inside arrays."
+  :expected-result :failed
+  (with-php-mode-test ("issue-115.php" :indent t :magic t)))
+
+(ert-deftest php-mode-test-issue-124 ()
+  "Proper syntax propertizing when a quote appears in a heredoc."
+  (with-php-mode-test ("issue-124.php" :indent t)
+     (search-forward "Heredoc")
+     ;; The heredoc should be recognized as a string.
+     (dolist (syntax (c-guess-basic-syntax))
+       (should (eq (car syntax) 'string)))
+     (search-forward "function bar")
+     ;; After the heredoc should *not* be recognized as a string.
+     (dolist (syntax (c-guess-basic-syntax))
+       (should (not (eq (car syntax) 'string))))))
+
+(ert-deftest php-mode-test-issue-136 ()
+  "Proper highlighting for variable interpolation."
+  (with-php-mode-test ("issue-136.php")
+    (let ((variables '("$name"
+                       "${name}"
+                       "{$name}"
+                       "{$user->name}"
+                       "{$user->getName()}"
+                       "{$users[0]->name}"
+                       "{$users[$index]->name}"
+                       "{$users[$user->id]->name}"
+                       "{$users[$user->getID()]->name}")))
+      ;; All of the strings we want to test come after the call to
+      ;; ob_start(), so we jump to there first.
+      (search-forward "ob_start()")
+      (dolist (variable variables)
+        (search-forward variable)
+        (should (eq 'font-lock-variable-name-face
+                    (get-text-property (point) 'face)))))))
+
+;;; php-mode-test.el ends here
